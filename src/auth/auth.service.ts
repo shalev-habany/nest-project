@@ -1,27 +1,32 @@
 import { Body, ForbiddenException, Injectable } from "@nestjs/common";
 import { PrismaService } from "src/prisma/prisma.service";
-import { AuthDto } from "./dto";
+import { SignUpDto } from "./dto";
 import * as argon from 'argon2';
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime";
+import { JwtService } from "@nestjs/jwt";
+import { user } from "@prisma/client";
+import { ConfigService } from "@nestjs/config";
+import { SignInDto } from "./dto/sign-in.dto";
 
 @Injectable({})
 export class AuthService {
-    constructor(private prismaService: PrismaService) { }
+    constructor(
+        private prismaService: PrismaService,
+        private jwtService: JwtService,
+        private configService: ConfigService,
+    ) { }
 
-    async signUp(dto: AuthDto) {
+    async signUp(dto: SignUpDto): Promise<user> {
         const hash = await argon.hash(dto.password);
         try {
             const user = await this.prismaService.user.create({
                 data: {
                     email: dto.email,
                     passwordHash: hash,
+                    firstName: dto.firstName,
+                    lastName: dto.lastName,
                     lastUpdateTime: new Date()
                 }
-                // select: {
-                //     id: true,
-                //     email: true,
-                //     creationTime: true
-                // }
             });
             delete user.passwordHash;
             return user;
@@ -33,16 +38,31 @@ export class AuthService {
         }
     }
 
-    async signIn(dto: AuthDto) {
+    async signIn(dto: SignInDto): Promise<{access_token: String}> {
         const user = await this.prismaService.user.findUnique({
             where: {
                 email: dto.email
             }
         });
-        if (!user) throw new ForbiddenException('username incorrect');
+        if (!user) throw new ForbiddenException('email incorrect');
         const pwdCompare: boolean = await argon.verify(user.passwordHash, dto.password);
         if (!pwdCompare) throw new ForbiddenException('password incorrect');
         delete user.passwordHash;
-        return user;
+        return await this.signToken(user.id, user.email);
+    }
+
+    private async signToken(userId: number, email: string): Promise<{access_token: String}> {
+        const payload = {
+            email,
+            sub: userId,
+        }
+        const secret = this.configService.get('JWT_SECRET');
+        const access_token = await this.jwtService.signAsync(payload, {
+            secret,
+            expiresIn: '15m',
+        });
+        return {
+            access_token,
+        }
     }
 }
